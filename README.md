@@ -24,6 +24,14 @@ Requests go directly from your browser to `api.discogs.com` using its public col
 
 Large libraries take longer: imports use 100 releases per page and wait 2.6 seconds between pages to respect the unauthenticated rate limit of 25 requests/minute. Shared-IP traffic can still trigger a rate limit; the app reports this without replacing your previous collection. Closing the connection dialog cancels an import.
 
+## Share a Collection
+
+Open `https://ezeoleaf.github.io/daily-spin/USERNAME` to automatically load that Discogs user's public collection, with no connection form. Usernames with special characters are URL-encoded; the **Share collection** icon next to the account button creates and copies the correct link.
+
+Shared links are previews, not authentication. They never change Discogs or overwrite the visitor's saved collection. **Back to your shelf** returns to their saved library (or the demo). Any listens they log remain local to their browser, not the collection owner's journal. Choosing **Connect collection** explicitly saves that collection as their own. Private or missing collections display an error and a retry option.
+
+The build includes a `404.html` fallback so directly opening or refreshing username links works on GitHub Pages. GitHub still returns HTTP 404 for these deep links even though the app renders, so social crawlers may show a generic preview or no preview. User-specific social previews would require a server or edge hosting with route rewrites.
+
 ## Daily Picks and Journal
 
 - Your username determines a stable shuffled order. The local calendar date chooses the record, so refreshing does not change the daily pick.
@@ -41,7 +49,9 @@ Large libraries take longer: imports use 100 releases per page and wait 2.6 seco
 
 The included workflow installs dependencies, lints, runs unit and desktop/mobile browser tests, builds, then deploys `dist` to Pages. Pull requests run checks without deployment. If your default branch is not `main`, update both the workflow branch trigger and deployment condition.
 
-Relative asset paths support `https://USERNAME.github.io/REPOSITORY/`, user sites, and custom domains without changing Vite's base path. Recommendations are calculated in each visitor's browser, so GitHub Actions only needs to run when the app changes. No GitHub secrets are needed.
+The workflow sets `PAGES_BASE_PATH` from the repository name (for example `/daily-spin/`), or `/` for a `USERNAME.github.io` repository. For a custom domain served at its root, set this environment value to `/` in both workflow steps. Local development and builds default to `/`.
+
+For a manual repository-site build, run `PAGES_BASE_PATH=/daily-spin/ npm run build`. Use the same variable for `npm run preview` or `npm run test:e2e` so the server and tests use the correct base path. Recommendations are calculated in each visitor's browser, so GitHub Actions only needs to run when the app changes. No GitHub secrets are needed.
 
 ## Checks
 

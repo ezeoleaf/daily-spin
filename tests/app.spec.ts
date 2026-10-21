@@ -41,7 +41,7 @@ async function connectCollection(page: Page) {
 test('daily pick is stable, alternates work, and the journal persists and can be edited', async ({
     page,
 }) => {
-    await page.goto('/')
+    await page.goto('./')
     const title = await page.locator('#record-title').innerText()
     await page.reload()
     await expect(page.locator('#record-title')).toHaveText(title)
@@ -66,7 +66,7 @@ test('daily pick is stable, alternates work, and the journal persists and can be
 test('collection search, genres, empty states, and sorting work', async ({
     page,
 }) => {
-    await page.goto('/')
+    await page.goto('./')
     await page.getByRole('button', { name: /^Collection/ }).click()
     await expect(page.locator('.collection-record')).toHaveCount(6)
     await page.getByLabel('Search collection').fill('radiohead')
@@ -89,7 +89,7 @@ test('collection search, genres, empty states, and sorting work', async ({
 test('imports all pages, filters CDs, caches the collection, and separates the demo journal', async ({
     page,
 }) => {
-    await page.goto('/')
+    await page.goto('./')
     await page.getByRole('button', { name: 'Mark as listened' }).click()
     await connectCollection(page)
     await expect(page.locator('.demo-banner')).not.toBeVisible()
@@ -107,7 +107,7 @@ test('imports all pages, filters CDs, caches the collection, and separates the d
 })
 
 test('failed sync leaves the saved collection intact', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('./')
     await connectCollection(page)
     await page.route('https://api.discogs.com/**', (route) =>
         route.fulfill({ status: 403, json: { message: 'Forbidden' } }),
@@ -126,7 +126,7 @@ test('connection dialog explains a missing account and supports Escape', async (
     await page.route('https://api.discogs.com/**', (route) =>
         route.fulfill({ status: 404, json: {} }),
     )
-    await page.goto('/')
+    await page.goto('./')
     await page.getByRole('button', { name: 'Connect Discogs' }).click()
     await page.getByLabel('Discogs username').fill('missing-user')
     await page
@@ -147,7 +147,7 @@ test('corrupted cache falls back safely and blocked storage is reported', async 
             throw new Error('Storage blocked')
         }
     })
-    await page.goto('/')
+    await page.goto('./')
     await expect(page.locator('#record-title')).not.toBeEmpty()
     await page.getByRole('button', { name: 'Mark as listened' }).click()
     await expect(page.getByRole('alert')).toContainText('storage is unavailable')
@@ -157,7 +157,7 @@ test('corrupted cache falls back safely and blocked storage is reported', async 
 
 test('daily pick rolls over at local midnight', async ({ page }) => {
     await page.clock.install({ time: new Date(2026, 9, 21, 23, 59, 55) })
-    await page.goto('/')
+    await page.goto('./')
     const before = await page.locator('#record-title').innerText()
     await page.clock.fastForward(20000)
     await expect(page.locator('#record-title')).not.toHaveText(before)
@@ -168,7 +168,7 @@ test('album artwork renders and primary views fit the viewport', async ({
 }, testInfo) => {
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
-    await page.goto('/')
+    await page.goto('./')
     await expect(page.locator('.featured-cover img')).toBeVisible()
     await expect
         .poll(() =>
@@ -196,7 +196,7 @@ test('album artwork renders and primary views fit the viewport', async ({
 })
 
 test('Daily Spin preserves legacy saved data and disconnect stays disconnected', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('./')
     await page.evaluate(() => {
         const record = {
             id: 101, title: 'Saved Album', artist: 'Saved Artist', year: 1959,

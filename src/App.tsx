@@ -7,6 +7,7 @@ import {
   BookOpen,
   Check,
   CheckCircle2,
+  Copy,
   Disc3,
   ExternalLink,
   Headphones,
@@ -16,11 +17,13 @@ import {
   LogOut,
   RefreshCw,
   Search,
+  Share2,
   Shuffle,
   Trash2,
   X,
 } from 'lucide-react'
 import { demoRecords } from './demo'
+import { collectionUrl, sharedUsername as usernameFromPath } from './sharing'
 import { dailyRecord, fetchCollection, localDate } from './records'
 import type { Collection, Listen, RecordAlbum } from './records'
 
@@ -29,7 +32,11 @@ type Journals = Record<string, Listen[]>
 const CACHE_KEY = 'daily-spin.collection.v1'
 const JOURNAL_KEY = 'daily-spin.journals.v1'
 
-function readStored<Value>(key: string, fallback: Value, legacyKey: string): Value {
+function readStored<Value>(
+  key: string,
+  fallback: Value,
+  legacyKey: string,
+): Value {
   try {
     const current = localStorage.getItem(key)
     const legacy = localStorage.getItem(legacyKey)
@@ -78,7 +85,11 @@ function initialCollection(): Collection | null {
 }
 
 function initialJournals(): Journals {
-  const saved = readStored<Journals>(JOURNAL_KEY, {}, 'daily-record.journals.v1')
+  const saved = readStored<Journals>(
+    JOURNAL_KEY,
+    {},
+    'daily-record.journals.v1',
+  )
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {}
   return Object.fromEntries(
     Object.entries(saved).filter(
@@ -216,16 +227,92 @@ function ConnectionDialog({
   )
 }
 
-function App() {
-  const [collection, setCollection] = useState<Collection | null>(
-    initialCollection,
+function ShareDialog({
+  username,
+  onClose,
+}: {
+  username: string
+  onClose: () => void
+}) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
+  const url = collectionUrl(
+    username,
+    window.location.origin,
+    import.meta.env.BASE_URL,
   )
+  useEffect(() => {
+    dialog.current?.showModal()
+  }, [])
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setCopyError(false)
+    } catch {
+      setCopyError(true)
+    }
+  }
+
+  return (
+    <dialog ref={dialog} onCancel={onClose} aria-labelledby="share-title">
+      <div className="dialog-top">
+        <Share2 size={26} />
+        <button
+          className="icon-button"
+          title="Close"
+          aria-label="Close"
+          onClick={onClose}
+        >
+          <X size={20} />
+        </button>
+      </div>
+      <h2 id="share-title">Share this shelf.</h2>
+      <label htmlFor="share-url">Collection link / @{username}</label>
+      <div className="username-input">
+        <input
+          id="share-url"
+          value={url}
+          readOnly
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      </div>
+      {copyError && (
+        <p className="error" role="alert">
+          Clipboard unavailable.
+        </p>
+      )}
+      <button
+        className="button primary full share-copy"
+        onClick={() => void copyLink()}
+      >
+        {copied ? <Check size={18} /> : <Copy size={18} />}
+        {copied ? 'Copied' : 'Copy link'}
+      </button>
+    </dialog>
+  )
+}
+
+function App() {
+  const [routeUsername, setRouteUsername] = useState(() =>
+    usernameFromPath(window.location.pathname, import.meta.env.BASE_URL),
+  )
+  const [collection, setCollection] = useState<Collection | null>(() => {
+    const saved = initialCollection()
+    return routeUsername &&
+      saved?.username.toLowerCase() !== routeUsername.toLowerCase()
+      ? null
+      : saved
+  })
   const [journals, setJournals] = useState<Journals>(initialJournals)
   const [tab, setTab] = useState<Tab>('today')
   const [today, setToday] = useState(localDate)
   const [alternate, setAlternate] = useState({ key: '', index: 0 })
   const [connecting, setConnecting] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(Boolean(routeUsername))
+  const [sharing, setSharing] = useState(false)
   const [progress, setProgress] = useState('Connecting...')
   const [error, setError] = useState('')
   const [storageError, setStorageError] = useState('')
@@ -274,8 +361,31 @@ function App() {
     }
   }, [])
 
-  function saveCollection(next: Collection | null) {
+  useEffect(() => {
+    if (!routeUsername) return
+    const request = new AbortController()
+    controller.current = request
+    void fetchCollection(routeUsername, setProgress, request.signal)
+      .then((imported) => {
+        if (!request.signal.aborted) setCollection(imported)
+      })
+      .catch((failure: unknown) => {
+        if (!request.signal.aborted)
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : 'Could not open this collection.',
+          )
+      })
+      .finally(() => {
+        if (!request.signal.aborted) setLoading(false)
+      })
+    return () => request.abort()
+  }, [routeUsername])
+
+  function saveCollection(next: Collection | null, persist = true) {
     setCollection(next)
+    if (!persist) return
     try {
       if (next) localStorage.setItem(CACHE_KEY, JSON.stringify(next))
       else localStorage.removeItem(CACHE_KEY)
@@ -297,7 +407,7 @@ function App() {
     }
   }
 
-  async function connect(input: string) {
+  async function connect(input: string, asShared = false) {
     controller.current?.abort()
     const request = new AbortController()
     controller.current = request
@@ -306,7 +416,11 @@ function App() {
     try {
       const imported = await fetchCollection(input, setProgress, request.signal)
       if (request.signal.aborted) return
-      saveCollection(imported)
+      saveCollection(imported, !asShared)
+      if (!asShared && routeUsername) {
+        setRouteUsername(null)
+        window.history.replaceState(null, '', import.meta.env.BASE_URL)
+      }
       setConnecting(false)
       setSearch('')
       setGenre('All genres')
@@ -326,6 +440,19 @@ function App() {
     controller.current?.abort()
     setLoading(false)
     setConnecting(false)
+    setError('')
+  }
+
+  function disconnectCollection() {
+    controller.current?.abort()
+    setLoading(false)
+    if (routeUsername) {
+      setRouteUsername(null)
+      window.history.replaceState(null, '', import.meta.env.BASE_URL)
+      setCollection(initialCollection())
+    } else saveCollection(null)
+    setSearch('')
+    setGenre('All genres')
     setError('')
   }
   function logListen() {
@@ -362,17 +489,29 @@ function App() {
               daily spin<span className="brand-dot">.</span>
             </span>
           </a>
-          <button
-            className={`button account-button ${collection ? 'connected' : ''}`}
-            onClick={() => {
-              setError('')
-              setConnecting(true)
-            }}
-          >
-            <span className="status-dot" />
-            {collection ? `@${username}` : 'Connect Discogs'}
-            <ArrowUpRight size={15} />
-          </button>
+          <div className="header-actions">
+            {collection && (
+              <button
+                className="icon-button"
+                title="Share collection"
+                aria-label="Share collection"
+                onClick={() => setSharing(true)}
+              >
+                <Share2 size={18} />
+              </button>
+            )}
+            <button
+              className={`button account-button ${collection ? 'connected' : ''}`}
+              onClick={() => {
+                setError('')
+                setConnecting(true)
+              }}
+            >
+              <span className="status-dot" />
+              {collection ? `@${username}` : 'Connect Discogs'}
+              <ArrowUpRight size={15} />
+            </button>
+          </div>
         </header>
         <div className="navigation-row">
           <nav aria-label="Main navigation">
@@ -392,7 +531,9 @@ function App() {
                 <Icon size={16} />
                 <span>{label}</span>
                 {value === 'collection' && (
-                  <span className="nav-count">{records.length}</span>
+                  <span className="nav-count">
+                    {routeUsername && !collection ? '...' : records.length}
+                  </span>
                 )}
               </button>
             ))}
@@ -405,7 +546,7 @@ function App() {
             })}
           </span>
         </div>
-        {!collection && (
+        {!collection && !routeUsername && (
           <div className="demo-banner">
             <span>
               <span className="demo-label">THE DEMO SHELF</span>
@@ -416,6 +557,17 @@ function App() {
             </span>
             <button onClick={() => setConnecting(true)}>
               Connect yours <ArrowRight size={15} />
+            </button>
+          </div>
+        )}
+        {routeUsername && (
+          <div className="demo-banner">
+            <span>
+              <span className="demo-label">SHARED COLLECTION</span>
+              <span className="demo-detail"> @{routeUsername}</span>
+            </span>
+            <button onClick={disconnectCollection}>
+              Back to your shelf <ArrowRight size={15} />
             </button>
           </div>
         )}
@@ -430,353 +582,396 @@ function App() {
           </div>
         )}
         <main>
-          {tab === 'today' && (
+          {routeUsername && !collection ? (
+            <section className="empty-state" aria-busy={loading}>
+              {loading ? (
+                <LoaderCircle size={36} className="spin" />
+              ) : (
+                <Disc3 size={36} />
+              )}
+              <h2>
+                {loading
+                  ? `Opening @${routeUsername}`
+                  : 'Collection unavailable'}
+              </h2>
+              {loading ? (
+                <p role="status">{progress}</p>
+              ) : (
+                <button
+                  className="button primary"
+                  onClick={() => void connect(routeUsername, true)}
+                >
+                  <RefreshCw size={16} />
+                  Try again
+                </button>
+              )}
+              <button className="text-link" onClick={disconnectCollection}>
+                Back to your shelf <ArrowRight size={16} />
+              </button>
+            </section>
+          ) : (
             <>
-              <section className="daily-section" aria-labelledby="record-title">
-                <div className="section-kicker">
-                  <span>
-                    <span className="live-dot" />
-                    {alternateIndex
-                      ? 'A LITTLE CHANGE OF PACE'
-                      : 'TODAY, ON ROTATION'}
-                  </span>
-                  <span>{dateLabel}</span>
-                </div>
-                <div className="daily-grid">
-                  <div className="record-stage">
-                    <div className="vinyl-disc" aria-hidden="true">
-                      <div className="vinyl-label">
-                        <span>
-                          DAILY
-                          <br />
-                          SPIN
-                        </span>
-                        <i />
-                      </div>
-                    </div>
-                    <Cover record={pick} className="featured-cover" />
-                    <div className="sleeve-caption">
-                      <span>
-                        SELECTED FROM{' '}
-                        {collection ? 'YOUR COLLECTION' : 'THE DEMO SHELF'}
-                      </span>
-                      <span>33 / 45</span>
-                    </div>
-                  </div>
-                  <div className="record-info" key={`${today}:${pick.id}`}>
-                    <div className="record-genre">
-                      {pick.genres[0] || 'FROM YOUR SHELF'}
-                      <span />
-                      {pick.year || 'UNDATED'}
-                    </div>
-                    <h1 id="record-title">{pick.title}</h1>
-                    <p className="artist-name">{pick.artist}</p>
-                    <div className="record-rule" />
-                    <dl className="record-details">
-                      <div>
-                        <dt>LABEL</dt>
-                        <dd>{pick.label}</dd>
-                      </div>
-                      <div>
-                        <dt>PRESSING</dt>
-                        <dd>{pick.format}</dd>
-                      </div>
-                    </dl>
-                    <div className="pick-actions">
-                      <button
-                        className={`button primary ${listened ? 'is-listened' : ''}`}
-                        onClick={logListen}
-                        disabled={listened}
-                      >
-                        {listened ? (
-                          <CheckCircle2 size={18} />
-                        ) : (
-                          <Headphones size={18} />
-                        )}
-                        {listened
-                          ? 'Added to your journal'
-                          : 'Mark as listened'}
-                      </button>
-                      <a
-                        href={recordLink(pick)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="icon-button discogs-link"
-                        title="View on Discogs"
-                        aria-label="View on Discogs"
-                      >
-                        <ArrowUpRight size={21} />
-                      </a>
-                    </div>
-                    <button
-                      className="another-pick"
-                      onClick={() =>
-                        setAlternate({
-                          key: pickKey,
-                          index: (alternateIndex + 1) % records.length,
-                        })
-                      }
-                      disabled={records.length < 2}
-                    >
-                      <Shuffle size={15} />
-                      Another pick
-                    </button>
-                  </div>
-                </div>
-              </section>
-              <section className="shelf-section" aria-labelledby="shelf-title">
-                <div className="section-heading">
-                  <div>
-                    <span className="eyebrow">GOOD COMPANY</span>
-                    <h2 id="shelf-title">
-                      Also on your shelf<span className="small-dot">.</span>
-                    </h2>
-                  </div>
-                  <button
-                    className="text-link"
-                    onClick={() => setTab('collection')}
+              {tab === 'today' && (
+                <>
+                  <section
+                    className="daily-section"
+                    aria-labelledby="record-title"
                   >
-                    View collection <ArrowRight size={16} />
-                  </button>
-                </div>
-                <div className="mini-shelf">
-                  {records
-                    .filter((record) => record.id !== pick.id)
-                    .slice(0, 4)
-                    .map((record) => (
+                    <div className="section-kicker">
+                      <span>
+                        <span className="live-dot" />
+                        {alternateIndex
+                          ? 'A LITTLE CHANGE OF PACE'
+                          : 'TODAY, ON ROTATION'}
+                      </span>
+                      <span>{dateLabel}</span>
+                    </div>
+                    <div className="daily-grid">
+                      <div className="record-stage">
+                        <div className="vinyl-disc" aria-hidden="true">
+                          <div className="vinyl-label">
+                            <span>
+                              DAILY
+                              <br />
+                              SPIN
+                            </span>
+                            <i />
+                          </div>
+                        </div>
+                        <Cover record={pick} className="featured-cover" />
+                        <div className="sleeve-caption">
+                          <span>
+                            SELECTED FROM{' '}
+                            {collection ? 'YOUR COLLECTION' : 'THE DEMO SHELF'}
+                          </span>
+                          <span>33 / 45</span>
+                        </div>
+                      </div>
+                      <div className="record-info" key={`${today}:${pick.id}`}>
+                        <div className="record-genre">
+                          {pick.genres[0] || 'FROM YOUR SHELF'}
+                          <span />
+                          {pick.year || 'UNDATED'}
+                        </div>
+                        <h1 id="record-title">{pick.title}</h1>
+                        <p className="artist-name">{pick.artist}</p>
+                        <div className="record-rule" />
+                        <dl className="record-details">
+                          <div>
+                            <dt>LABEL</dt>
+                            <dd>{pick.label}</dd>
+                          </div>
+                          <div>
+                            <dt>PRESSING</dt>
+                            <dd>{pick.format}</dd>
+                          </div>
+                        </dl>
+                        <div className="pick-actions">
+                          <button
+                            className={`button primary ${listened ? 'is-listened' : ''}`}
+                            onClick={logListen}
+                            disabled={listened}
+                          >
+                            {listened ? (
+                              <CheckCircle2 size={18} />
+                            ) : (
+                              <Headphones size={18} />
+                            )}
+                            {listened
+                              ? 'Added to your journal'
+                              : 'Mark as listened'}
+                          </button>
+                          <a
+                            href={recordLink(pick)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="icon-button discogs-link"
+                            title="View on Discogs"
+                            aria-label="View on Discogs"
+                          >
+                            <ArrowUpRight size={21} />
+                          </a>
+                        </div>
+                        <button
+                          className="another-pick"
+                          onClick={() =>
+                            setAlternate({
+                              key: pickKey,
+                              index: (alternateIndex + 1) % records.length,
+                            })
+                          }
+                          disabled={records.length < 2}
+                        >
+                          <Shuffle size={15} />
+                          Another pick
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+                  <section
+                    className="shelf-section"
+                    aria-labelledby="shelf-title"
+                  >
+                    <div className="section-heading">
+                      <div>
+                        <span className="eyebrow">GOOD COMPANY</span>
+                        <h2 id="shelf-title">
+                          Also on your shelf<span className="small-dot">.</span>
+                        </h2>
+                      </div>
+                      <button
+                        className="text-link"
+                        onClick={() => setTab('collection')}
+                      >
+                        View collection <ArrowRight size={16} />
+                      </button>
+                    </div>
+                    <div className="mini-shelf">
+                      {records
+                        .filter((record) => record.id !== pick.id)
+                        .slice(0, 4)
+                        .map((record) => (
+                          <a
+                            href={recordLink(record)}
+                            key={record.id}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="shelf-record"
+                          >
+                            <Cover record={record} />
+                            <div>
+                              <h3>{record.title}</h3>
+                              <p>{record.artist}</p>
+                              <span>
+                                {record.year || 'Year unknown'}{' '}
+                                <ArrowUpRight size={13} />
+                              </span>
+                            </div>
+                          </a>
+                        ))}
+                    </div>
+                  </section>
+                </>
+              )}
+              {tab === 'collection' && (
+                <section className="collection-section">
+                  <div className="section-heading page-heading">
+                    <div>
+                      <span className="eyebrow">
+                        {collection ? `@${username}` : 'THE DEMO SHELF'}
+                      </span>
+                      <h1>
+                        Your collection<span className="small-dot">.</span>
+                      </h1>
+                      <p>
+                        {records.length} vinyl releases. Plenty of good days
+                        ahead.
+                      </p>
+                    </div>
+                    {collection && (
+                      <div className="collection-actions">
+                        <button
+                          className="button secondary"
+                          onClick={() =>
+                            void connect(username, Boolean(routeUsername))
+                          }
+                          disabled={loading}
+                        >
+                          <RefreshCw
+                            size={16}
+                            className={loading ? 'spin' : ''}
+                          />
+                          {loading ? progress : 'Sync collection'}
+                        </button>
+                        <button
+                          className="icon-button"
+                          title="Disconnect collection"
+                          aria-label="Disconnect collection"
+                          onClick={disconnectCollection}
+                        >
+                          <LogOut size={18} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {collection && (
+                    <p className="sync-note">
+                      Last synced{' '}
+                      {new Date(collection.syncedAt).toLocaleString()}
+                      {Date.parse(`${today}T00:00:00`) -
+                        Date.parse(collection.syncedAt) >
+                      86400000
+                        ? ' / Sync to check for new additions.'
+                        : ''}
+                    </p>
+                  )}
+                  <div className="collection-toolbar">
+                    <label className="search-box">
+                      <Search size={17} />
+                      <input
+                        aria-label="Search collection"
+                        placeholder="Search artist or album"
+                        value={search}
+                        onChange={(event) => setSearch(event.target.value)}
+                      />
+                      {search && (
+                        <button
+                          className="icon-button"
+                          aria-label="Clear search"
+                          title="Clear search"
+                          onClick={() => setSearch('')}
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                    </label>
+                    <select
+                      aria-label="Filter by genre"
+                      value={genre}
+                      onChange={(event) => setGenre(event.target.value)}
+                    >
+                      <option>All genres</option>
+                      {genres.map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Sort collection"
+                      value={sort}
+                      onChange={(event) => setSort(event.target.value)}
+                    >
+                      <option value="artist">Artist A-Z</option>
+                      <option value="title">Album A-Z</option>
+                      <option value="year">Newest first</option>
+                    </select>
+                  </div>
+                  <p className="results-count">
+                    {filtered.length}{' '}
+                    {filtered.length === 1 ? 'record' : 'records'}{' '}
+                    <ArrowDown size={12} />
+                  </p>
+                  <div className="collection-grid">
+                    {filtered.map((record) => (
                       <a
-                        href={recordLink(record)}
+                        className="collection-record"
                         key={record.id}
+                        href={recordLink(record)}
                         target="_blank"
                         rel="noreferrer"
-                        className="shelf-record"
                       >
                         <Cover record={record} />
-                        <div>
+                        <div className="collection-record-title">
                           <h3>{record.title}</h3>
-                          <p>{record.artist}</p>
-                          <span>
-                            {record.year || 'Year unknown'}{' '}
-                            <ArrowUpRight size={13} />
-                          </span>
+                          <ArrowUpRight size={16} />
                         </div>
+                        <p>{record.artist}</p>
+                        <span>
+                          {record.year || 'Year unknown'} /{' '}
+                          {record.genres[0] || 'Vinyl'}
+                        </span>
                       </a>
                     ))}
-                </div>
-              </section>
-            </>
-          )}
-          {tab === 'collection' && (
-            <section className="collection-section">
-              <div className="section-heading page-heading">
-                <div>
-                  <span className="eyebrow">
-                    {collection ? `@${username}` : 'THE DEMO SHELF'}
-                  </span>
-                  <h1>
-                    Your collection<span className="small-dot">.</span>
-                  </h1>
-                  <p>
-                    {records.length} vinyl releases. Plenty of good days ahead.
-                  </p>
-                </div>
-                {collection && (
-                  <div className="collection-actions">
-                    <button
-                      className="button secondary"
-                      onClick={() => void connect(username)}
-                      disabled={loading}
-                    >
-                      <RefreshCw size={16} className={loading ? 'spin' : ''} />
-                      {loading ? progress : 'Sync collection'}
-                    </button>
-                    <button
-                      className="icon-button"
-                      title="Disconnect collection"
-                      aria-label="Disconnect collection"
-                      onClick={() => {
-                        controller.current?.abort()
-                        setLoading(false)
-                        saveCollection(null)
-                        setSearch('')
-                        setGenre('All genres')
-                        setError('')
-                      }}
-                    >
-                      <LogOut size={18} />
-                    </button>
                   </div>
-                )}
-              </div>
-              {collection && (
-                <p className="sync-note">
-                  Last synced {new Date(collection.syncedAt).toLocaleString()}
-                  {Date.parse(`${today}T00:00:00`) -
-                    Date.parse(collection.syncedAt) >
-                    86400000
-                    ? ' / Sync to check for new additions.'
-                    : ''}
-                </p>
-              )}
-              <div className="collection-toolbar">
-                <label className="search-box">
-                  <Search size={17} />
-                  <input
-                    aria-label="Search collection"
-                    placeholder="Search artist or album"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                  />
-                  {search && (
-                    <button
-                      className="icon-button"
-                      aria-label="Clear search"
-                      title="Clear search"
-                      onClick={() => setSearch('')}
-                    >
-                      <X size={16} />
-                    </button>
-                  )}
-                </label>
-                <select
-                  aria-label="Filter by genre"
-                  value={genre}
-                  onChange={(event) => setGenre(event.target.value)}
-                >
-                  <option>All genres</option>
-                  {genres.map((value) => (
-                    <option key={value}>{value}</option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Sort collection"
-                  value={sort}
-                  onChange={(event) => setSort(event.target.value)}
-                >
-                  <option value="artist">Artist A-Z</option>
-                  <option value="title">Album A-Z</option>
-                  <option value="year">Newest first</option>
-                </select>
-              </div>
-              <p className="results-count">
-                {filtered.length} {filtered.length === 1 ? 'record' : 'records'}{' '}
-                <ArrowDown size={12} />
-              </p>
-              <div className="collection-grid">
-                {filtered.map((record) => (
-                  <a
-                    className="collection-record"
-                    key={record.id}
-                    href={recordLink(record)}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Cover record={record} />
-                    <div className="collection-record-title">
-                      <h3>{record.title}</h3>
-                      <ArrowUpRight size={16} />
-                    </div>
-                    <p>{record.artist}</p>
-                    <span>
-                      {record.year || 'Year unknown'} /{' '}
-                      {record.genres[0] || 'Vinyl'}
-                    </span>
-                  </a>
-                ))}
-              </div>
-              {!filtered.length && (
-                <div className="empty-state">
-                  <Search size={32} />
-                  <h2>No records found</h2>
-                  <p>Nothing matches this search.</p>
-                  <button
-                    className="text-link"
-                    onClick={() => {
-                      setSearch('')
-                      setGenre('All genres')
-                    }}
-                  >
-                    Clear filters <X size={14} />
-                  </button>
-                </div>
-              )}
-            </section>
-          )}
-          {tab === 'journal' && (
-            <section className="journal-section">
-              <div className="section-heading page-heading">
-                <div>
-                  <span className="eyebrow">
-                    {collection
-                      ? 'YOUR LISTENING JOURNAL'
-                      : 'DEMO LISTENING JOURNAL'}
-                  </span>
-                  <h1>
-                    Days well played<span className="small-dot">.</span>
-                  </h1>
-                  <p>
-                    {listens.length}{' '}
-                    {listens.length === 1 ? 'listen' : 'listens'} /{' '}
-                    {new Set(listens.map((listen) => listen.record.id)).size}{' '}
-                    records rediscovered
-                  </p>
-                </div>
-                <Headphones
-                  className="journal-icon"
-                  size={42}
-                  strokeWidth={1}
-                />
-              </div>
-              {!listens.length ? (
-                <div className="empty-state">
-                  <Disc3 size={48} strokeWidth={1} />
-                  <h2>The first spin is yours.</h2>
-                  <p>No listens logged yet.</p>
-                  <button
-                    className="button primary"
-                    onClick={() => setTab('today')}
-                  >
-                    Today's record <ArrowRight size={16} />
-                  </button>
-                </div>
-              ) : (
-                <div className="journal-list">
-                  {listens.map((listen) => (
-                    <article
-                      className="journal-entry"
-                      key={`${listen.date}:${listen.record.id}`}
-                    >
-                      <time dateTime={listen.date}>
-                        {new Date(`${listen.date}T12:00:00`).toLocaleDateString(
-                          undefined,
-                          { month: 'short', day: 'numeric' },
-                        )}
-                        <span>{listen.date.slice(0, 4)}</span>
-                      </time>
-                      <Cover record={listen.record} />
-                      <div className="journal-record">
-                        <h3>{listen.record.title}</h3>
-                        <p>{listen.record.artist}</p>
-                      </div>
-                      <span className="listened-tag">
-                        <Check size={13} />
-                        Listened
-                      </span>
+                  {!filtered.length && (
+                    <div className="empty-state">
+                      <Search size={32} />
+                      <h2>No records found</h2>
+                      <p>Nothing matches this search.</p>
                       <button
-                        className="icon-button"
-                        title="Remove listen"
-                        aria-label={`Remove ${listen.record.title} from journal`}
-                        onClick={() =>
-                          removeListen(listen.date, listen.record.id)
-                        }
+                        className="text-link"
+                        onClick={() => {
+                          setSearch('')
+                          setGenre('All genres')
+                        }}
                       >
-                        <Trash2 size={16} />
+                        Clear filters <X size={14} />
                       </button>
-                    </article>
-                  ))}
-                </div>
+                    </div>
+                  )}
+                </section>
               )}
-            </section>
+              {tab === 'journal' && (
+                <section className="journal-section">
+                  <div className="section-heading page-heading">
+                    <div>
+                      <span className="eyebrow">
+                        {collection
+                          ? 'YOUR LISTENING JOURNAL'
+                          : 'DEMO LISTENING JOURNAL'}
+                      </span>
+                      <h1>
+                        Days well played<span className="small-dot">.</span>
+                      </h1>
+                      <p>
+                        {listens.length}{' '}
+                        {listens.length === 1 ? 'listen' : 'listens'} /{' '}
+                        {
+                          new Set(listens.map((listen) => listen.record.id))
+                            .size
+                        }{' '}
+                        records rediscovered
+                      </p>
+                    </div>
+                    <Headphones
+                      className="journal-icon"
+                      size={42}
+                      strokeWidth={1}
+                    />
+                  </div>
+                  {!listens.length ? (
+                    <div className="empty-state">
+                      <Disc3 size={48} strokeWidth={1} />
+                      <h2>The first spin is yours.</h2>
+                      <p>No listens logged yet.</p>
+                      <button
+                        className="button primary"
+                        onClick={() => setTab('today')}
+                      >
+                        Today's record <ArrowRight size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="journal-list">
+                      {listens.map((listen) => (
+                        <article
+                          className="journal-entry"
+                          key={`${listen.date}:${listen.record.id}`}
+                        >
+                          <time dateTime={listen.date}>
+                            {new Date(
+                              `${listen.date}T12:00:00`,
+                            ).toLocaleDateString(undefined, {
+                              month: 'short',
+                              day: 'numeric',
+                            })}
+                            <span>{listen.date.slice(0, 4)}</span>
+                          </time>
+                          <Cover record={listen.record} />
+                          <div className="journal-record">
+                            <h3>{listen.record.title}</h3>
+                            <p>{listen.record.artist}</p>
+                          </div>
+                          <span className="listened-tag">
+                            <Check size={13} />
+                            Listened
+                          </span>
+                          <button
+                            className="icon-button"
+                            title="Remove listen"
+                            aria-label={`Remove ${listen.record.title} from journal`}
+                            onClick={() =>
+                              removeListen(listen.date, listen.record.id)
+                            }
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+            </>
           )}
         </main>
         <footer>
@@ -796,6 +991,9 @@ function App() {
           </span>
         </footer>
       </div>
+      {sharing && collection && (
+        <ShareDialog username={username} onClose={() => setSharing(false)} />
+      )}
       {connecting && (
         <ConnectionDialog
           username={collection?.username ?? ''}

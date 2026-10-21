@@ -6,7 +6,7 @@ export default defineConfig({
     retries: process.env.CI ? 2 : 0,
     reporter: 'list',
     use: {
-        baseURL: 'http://127.0.0.1:4179',
+        baseURL: `http://127.0.0.1:4179${process.env.PAGES_BASE_PATH || '/'}`,
         trace: 'retain-on-failure',
     },
     projects: [
